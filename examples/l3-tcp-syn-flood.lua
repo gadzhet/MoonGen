@@ -11,6 +11,7 @@ function configure(parser)
 	parser:option("-i --ip", "Source IP (IPv4 or IPv6)."):default("10.0.0.1")
 	parser:option("-d --destination", "Destination IP (IPv4 or IPv6).")
 	parser:option("-f --flows", "Number of different IPs to use."):default(100):convert(tonumber)
+	parser:option("-dp --dport", "Dst tcp port. Default 80"):default(80):convert(tonumber)
 end
 
 function master(args)
@@ -18,12 +19,12 @@ function master(args)
 		local dev = device.config{port = dev}
 		dev:wait()
 		dev:getTxQueue(0):setRate(args.rate)
-		mg.startTask("loadSlave", dev:getTxQueue(0), args.ip, args.flows, args.destination)
+		mg.startTask("loadSlave", dev:getTxQueue(0), args.ip, args.flows, args.destination, args.dport)
 	end
 	mg.waitForTasks()
 end
 
-function loadSlave(queue, minA, numIPs, dest)
+function loadSlave(queue, minA, numIPs, dest, dport)
 	--- parse and check ip addresses
 	local minIP, ipv4 = parseIPAddress(minA)
 	if minIP then
@@ -34,13 +35,13 @@ function loadSlave(queue, minA, numIPs, dest)
 
 	-- min TCP packet size for IPv6 is 74 bytes (+ CRC)
 	local packetLen = ipv4 and 60 or 74
-	
+
 	-- continue normally
 	local mem = memory.createMemPool(function(buf)
-		buf:getTcpPacket(ipv4):fill{ 
+		buf:getTcpPacket(ipv4):fill{
 			ethSrc = queue,
-			ethDst = "12:34:56:78:90",
-			ip4Dst = dest, 
+			ethDst = "fa:16:3e:ac:f3:e0",
+			ip4Dst = dest,
 			ip6Dst = dest,
 			tcpSyn = 1,
 			tcpSeqNumber = 1,
@@ -55,14 +56,14 @@ function loadSlave(queue, minA, numIPs, dest)
 
 	local txStats = stats:newDevTxCounter(queue, "plain")
 	while mg.running() do
-		-- fill packets and set their size 
+		-- fill packets and set their size
 		bufs:alloc(packetLen)
-		for i, buf in ipairs(bufs) do 			
+		for i, buf in ipairs(bufs) do
 			local pkt = buf:getTcpPacket(ipv4)
-			
 			--increment IP
 			if ipv4 then
 				pkt.ip4.src:set(minIP)
+				pkt.tcp:setDstPort(dport)
 				pkt.ip4.src:add(counter)
 			else
 				pkt.ip6.src:set(minIP)
@@ -75,13 +76,12 @@ function loadSlave(queue, minA, numIPs, dest)
 				buf:dump()
 				c = c + 1
 			end
-		end 
+		end
 		--offload checksums to NIC
 		bufs:offloadTcpChecksums(ipv4)
-		
+
 		queue:send(bufs)
 		txStats:update()
 	end
 	txStats:finalize()
 end
-
